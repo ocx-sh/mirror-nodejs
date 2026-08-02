@@ -1,0 +1,110 @@
+# Repo-wide policy for the Node.js runtime mirrored here.
+#
+# NOT a spec: it has no name/target/source and is never loaded on its own.
+# Everything a package owns (name, target, source, assets, asset_type,
+# metadata, catalog, tests, versions, announce, annotations) stays in that
+# package's own file.
+#
+# ⚠️ `extends:` is a SHALLOW merge of top-level keys. A spec that sets a key
+# below replaces that block OUTRIGHT — there is no per-key merge. `platforms:`
+# is where this bites: it carries BOTH the runner matrix and the container
+# legs, so a child that restates it to tweak one runner silently drops every
+# `containers:` entry. Nothing reds — the legs simply stop existing, and every
+# os.features claim in that spec goes back to being merely asserted. Restate
+# `platforms:` IN FULL or not at all.
+
+skip_prereleases: true
+cascade: true
+
+# `none`, carried unchanged from this repo's flat layout. The fleet rule is
+# `date` (a cascade tag re-points on every re-publish and a bare version tag
+# would orphan the prior digest), and Node versions are bare semver so there is
+# no `+build` segment for `date` to collide with — switching is a live option,
+# but it is a publishing-policy change and not part of this port.
+build_timestamp: none
+
+# No `verify:` block. `github_asset_digest` is a github_release-source option
+# and this repo's only package is `url_index`. Downloads are HTTPS from
+# nodejs.org/dist; upstream's `SHASUMS256.txt` is a per-release sidecar with no
+# `checksums_file` wiring on this source type.
+
+concurrency:
+  # Node tarballs are 30–60 MB and each bundle re-compresses the whole tree
+  # (a full runtime plus npm's node_modules, ~120 MB extracted), so these stay
+  # low. Carried from the flat layout, proven against this exact upstream.
+  max_downloads: 4
+  max_bundles: 2
+  max_pushes: 2
+  rate_limit_ms: 200
+  max_retries: 3
+  compression_threads: 0
+
+# `off`, and it cannot be otherwise here. The scan only looks BELOW an
+# interface PATH entry of the form ${installPath}/<dir>, and the load gate
+# checks EVERY metadata file a spec's `metadata:` block can select. Unix gets a
+# real `${installPath}/bin`, but the Windows zip has no bin/ at all — node.exe
+# and the .cmd shims sit at the archive root — so metadata-windows.json's only
+# honest PATH entry is a bare `${installPath}`, and `auto`/`verify` is rejected
+# at spec load with exit 65 ("bin_scan is enabled but metadata-windows.json
+# declares no interface-visible ${installPath}/<dir> PATH entry"). Keeping the
+# archive wrapper on Windows (`strip_components: 0`, the python-build-standalone
+# escape hatch) is not available either: Node's wrapper is
+# `node-v<version>-win-x64/`, a version-dependent name no static metadata file
+# can point PATH at. `off` with a hand-listed `binaries` is the blessed shape.
+bin_scan: off
+
+# ─── Platform matrix ────────────────────────────────────────────────────────
+#
+# ⚠️ `os.features` states what the artifact REQUIRES OF THE HOST, not how it
+# was built. The official nodejs.org/dist Linux builds are dynamically linked
+# against glibc on BOTH arches (measurement above node/mirror.yml's `assets:`),
+# so both Linux keys carry `+libc.glibc`. A bare key here would be a false
+# universality claim: an empty `os.features` also matches musl hosts, where
+# these binaries cannot load at all.
+#
+# There is deliberately no `+libc.musl` counterpart. nodejs.org/dist publishes
+# zero musl builds — the only source is unofficial-builds.nodejs.org, whose
+# arm64 coverage is version-gated, whose integrity material is an unsigned
+# SHASUMS256.txt on the same host, and which offers no retention guarantee.
+#
+# Container legs follow from what each key CLAIMS, and are the only mechanism
+# that turns a claim into evidence. `+libc.glibc` → ubuntu + fedora (two glibc
+# vintages), and NO alpine: a glibc build cannot load under musl, so an alpine
+# leg would red on a correct artifact — and the renderer rejects an alpine leg
+# on a glibc key outright (exit 65). Both images ship libstdc++, which
+# `bin/node` also needs (DT_NEEDED libstdc++.so.6, libgcc_s.so.1).
+platforms:
+  "linux/amd64+libc.glibc":
+    runner: ubuntu-latest
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "fedora:40",    shell: bash }
+  "linux/arm64+libc.glibc":
+    # arm64 container legs run natively — no qemu — so the runner arch must
+    # match the platform or the renderer's guard reds the leg up front.
+    runner: ubuntu-24.04-arm
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "fedora:40",    shell: bash }
+  darwin/amd64:
+    # Intel slice tested on the arm64 macos-14 runner via Rosetta 2 (GitHub's
+    # macos-13 Intel pool is exhausted and deadlocks the push job).
+    runner: macos-14
+    prefix: ["arch", "-x86_64"]
+  darwin/arm64:
+    runner: macos-14
+    shell: bash
+  windows/amd64:
+    runner: windows-latest
+    shell: pwsh
+  windows/arm64:
+    # Native arm64 Windows runner — the amd64 pool cannot execute an ARM64 PE.
+    runner: windows-11-arm
+    shell: pwsh
+  # No `containers:` on darwin or windows — those runners have no Linux
+  # container engine, and the key is rejected at spec load.
+
+notify:
+  discord:
+    webhook_secret: OCX_MIRROR_DISCORD_HOOK
+    user_id: "227748867204972545"  # pinged in-message on failures

@@ -1,0 +1,138 @@
+extends: ../mirror-base.yml
+
+name: node
+
+# Logical index package `nodejs/node` at the physical path
+# `ghcr.io/ocx-contrib/nodejs/node` — slash segments, never hyphen-flattened.
+# The first segment must be this repo's own GitHub owner: GITHUB_TOKEN only
+# authorises packages owned by the repo the workflow runs in.
+#
+# `nodejs/node` mirrors upstream's own coordinates — the OpenJS Foundation org
+# is `nodejs` and the binary is `node`. Succeeds the flat `ocx.sh/nodejs`
+# coordinate this repository published before the grouped layout.
+target:
+  registry: ghcr.io
+  repository: ocx-contrib/nodejs/node
+
+# Node ships no GitHub release assets — the tarballs live on the nodejs.org
+# CDN and the release list is a JSON index. scripts/generate.py fetches
+# https://nodejs.org/dist/index.json and reshapes it into a url_index.
+#
+# `command` resolves against THIS spec's directory, so the path is
+# `scripts/generate.py` and not `node/scripts/generate.py`.
+source:
+  type: url_index
+  generator:
+    command: ["uv", "run", "scripts/generate.py"]
+    timeout_seconds: 240
+
+# ─── libc gate (Phase 3.5) — the evidence, not the conclusion ───────────────
+#
+# The official nodejs.org/dist Linux builds are dynamically glibc-linked on
+# both arches. Measured 2026-08-02 on `bin/node` from v24.18.1:
+#
+#   $ file node-v24.18.1-linux-x64/bin/node
+#   ELF 64-bit LSB executable, x86-64, dynamically linked,
+#   interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 3.2.0
+#   $ readelf -d … | grep NEEDED
+#   libdl.so.2 libstdc++.so.6 libm.so.6 libgcc_s.so.1 libpthread.so.0
+#   libc.so.6 ld-linux-x86-64.so.2
+#
+# (linux-arm64 is the same build shape with interpreter
+# /lib/ld-linux-aarch64.so.1 — recorded in the 2026-08-01 fleet libc audit.)
+#
+# NOT static — PT_INTERP names the glibc loader — so both Linux keys carry
+# `+libc.glibc`. The flat layout's bare keys were a false universality claim:
+# an empty os.features also matches musl hosts, where these binaries cannot
+# load. Upstream publishes no musl build on this host, so there is no
+# `+libc.musl` counterpart to split against (see ../mirror-base.yml). The
+# ubuntu + fedora container legs there are what turn the glibc claim into
+# evidence.
+#
+# ─── Scope ──────────────────────────────────────────────────────────────────
+#
+# Upstream also publishes, and this mirror deliberately does not carry:
+#   node-*-linux-{armv7l,ppc64le,s390x}.tar.*  — no GHA runner
+#   node-*-{aix,sunos}-*, *-headers.tar.*      — not a runtime target / sources
+#   *.msi, *.pkg, bare node.exe                — installers, not archives
+#   *.tar.gz twins of the linux .tar.xz        — redundant, and .xz is smaller
+#
+# The generator's PLATFORMS map already restricts the emitted index to the six
+# entries below, and these patterns pick exactly one of them each. Resolution
+# verified BOTH ways against the live index (2026-08-02): across all 62 in-range
+# non-prerelease versions (20.0.0 … 24.18.1), each of the six patterns matches
+# EXACTLY one asset — never zero (silently skipped, a green run with a missing
+# platform) and never two (an ambiguous-match error).
+assets:
+  "linux/amd64+libc.glibc":
+    - "node-.*-linux-x64\\.tar\\.xz"
+  "linux/arm64+libc.glibc":
+    - "node-.*-linux-arm64\\.tar\\.xz"
+  darwin/amd64:
+    - "node-.*-darwin-x64\\.tar\\.gz"
+  darwin/arm64:
+    - "node-.*-darwin-arm64\\.tar\\.gz"
+  windows/amd64:
+    - "node-.*-win-x64\\.zip"
+  windows/arm64:
+    - "node-.*-win-arm64\\.zip"
+
+# Every archive wraps its content in a single `node-v<version>-<platform>/`
+# directory, which `strip_components: 1` removes on all six platforms.
+#
+# On unix that leaves `bin/`, `lib/`, `include/` and `share/` side by side, and
+# side by side is load-bearing: `bin/npm`, `bin/npx` and `bin/corepack` are
+# RELATIVE symlinks into `../lib/node_modules/…`, so they only stay unbroken
+# because `lib/` extracts alongside `bin/`.
+#
+# The Windows zip has no `bin/` at all — `node.exe`, `npm.cmd`, `npx.cmd` and
+# `node_modules/` sit at the archive root — which is why windows gets its own
+# metadata file below (bare `${installPath}` on PATH, not `${installPath}/bin`).
+asset_type:
+  type: archive
+  strip_components: 1
+
+metadata:
+  default: metadata.json
+  platforms:
+    # Windows zips put node.exe at the archive root (no bin/ subdir), so
+    # PATH must point at installPath itself rather than installPath/bin.
+    windows/amd64: metadata-windows.json
+    windows/arm64: metadata-windows.json
+
+catalog:
+  # Resolves against this spec's own directory, and keeping the logo here puts
+  # it inside this workflow's `node/**` path trigger — a repo-root logo.* sits
+  # in no path filter and replacing it would publish nothing.
+  # CATALOG.md is found by the default probe beside this file.
+  logo: logo.svg
+
+versions:
+  # 20.x is the oldest line still in maintenance at the time this mirror was
+  # authored. `skip_prereleases: true` combines with the generator's LTS gate
+  # (a release is flagged prerelease unless index.json gives it an `lts`
+  # codename), so only LTS lines — 20, 22, 24 — are actually published.
+  min: "20.0.0"
+  new_per_run: 5
+  poll_interval: "0 */6 * * *"
+
+tests:
+  # `script:` resolves from the REPOSITORY ROOT, not from this spec's own
+  # directory — the opposite of `metadata.*` and `catalog.*` above.
+  - name: smoke
+    script: node/tests/smoke.star
+
+annotations:
+  # From the Phase 1.5 license gate. Node.js itself is MIT — the tarball's
+  # LICENSE opens with the verbatim MIT grant over "Copyright Node.js
+  # contributors". `gh api repos/nodejs/node/license` answers NOASSERTION only
+  # because that file is a 2900-line aggregate that also reproduces every
+  # bundled dependency's notice, which defeats GitHub's classifier. The
+  # aggregate is described in NOTICE.md.
+  org.opencontainers.image.licenses: "MIT"
+
+announce:
+  # Spelled out, not derived from target.repository — the logical name and the
+  # physical path are related by convention only.
+  package: nodejs/node
+  fork: ocx-contrib/index

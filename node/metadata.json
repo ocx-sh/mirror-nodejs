@@ -1,5 +1,7 @@
 {
-  "type": "bundle", "version": 1, "env": [
+  "type": "bundle",
+  "version": 1,
+  "env": [
     {
       "key": "PATH",
       "type": "path",
@@ -7,5 +9,11 @@
       "value": "${installPath}/bin",
       "visibility": "public"
     }
+  ],
+  "binaries": [
+    "node",
+    "npm",
+    "npx",
+    "corepack"
   ]
 }
