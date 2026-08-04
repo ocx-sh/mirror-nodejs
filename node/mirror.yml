@@ -114,7 +114,7 @@ versions:
   # codename), so only LTS lines — 20, 22, 24 — are actually published.
   min: "20.0.0"
   new_per_run: 5
-  poll_interval: "0 */6 * * *"
+  poll_interval: "18 0-23/6 * * *"
 
 tests:
   # `script:` resolves from the REPOSITORY ROOT, not from this spec's own
